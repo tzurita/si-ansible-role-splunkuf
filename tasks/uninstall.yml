@@ -1,0 +1,117 @@
+- name: Stop Splunk service (if running)
+  ansible.builtin.service:
+    name: "{{ splunk_service }}"
+    state: stopped
+  ignore_errors: true
+
+- name: Kill all remaining Splunk processes
+  ansible.builtin.command: "pkill -f splunk"
+  register: pkill_result
+  failed_when: false
+  changed_when: pkill_result.rc == 0
+
+- name: Disable Splunk service from startup
+  ansible.builtin.systemd:
+    name: "{{ splunk_service }}"
+    enabled: false
+  ignore_errors: true
+
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: auto  # Automatically detects RPM, DPKG, etc.
+
+- name: Check if Splunk is an RPM installation
+  ansible.builtin.set_fact:
+    is_splunk_installed: "{{ 'splunkforwarder' in ansible_facts.packages }}"
+
+- name: Uninstall Splunk RPM if installed
+  ansible.builtin.package:
+    name: splunkforwarder
+    state: absent
+  when: is_splunk_installed | default(false)
+
+- name: Check if Splunk is a tarball installation
+  ansible.builtin.stat:
+    path: "{{ splunk_home }}/bin/splunk"
+  register: tarball_check
+
+- name: Disable Splunk boot-start (if tar install)
+  ansible.builtin.command:
+    cmd: "{{ splunk_home }}/bin/splunk disable boot-start"
+  ignore_errors: true
+  when: tarball_check.stat.exists
+
+- name: Remove Splunk tarball installation
+  ansible.builtin.file:
+    path: "{{ splunk_home }}"
+    state: absent
+  when: tarball_check.stat.exists
+
+- name: Remove Splunk systemd service file if it exists
+  ansible.builtin.file:
+    path: "{{ splunk_systemd_file }}"
+    state: absent
+  notify: Reload systemd
+
+- name: Check ACLs on system logs
+  ansible.builtin.command:
+    cmd: "getfacl {{ item }}"
+  register: acl_check
+  loop: "{{ acl_paths }}"
+  changed_when: false
+  ignore_errors: true
+
+- name: Remove ACLs set for Splunk user on system logs (if present)
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: "{{ splunk_user }}"
+    etype: user
+    state: absent
+    recursive: true
+  loop: "{{ acl_paths }}"
+  loop_control:
+    loop_var: item
+  ignore_errors: true
+
+- name: Gather system user accounts
+  ansible.builtin.getent:
+    database: passwd
+  register: getent_passwd_result
+
+- name: Gather system group accounts
+  ansible.builtin.getent:
+    database: group
+  register: getent_group_result
+
+- name: Filter existing Splunk-related users
+  ansible.builtin.set_fact:
+    existing_splunk_users: "{{ [splunk_user, splunkfwd_user, splunkadmin_user] | select('in', ansible_facts.getent_passwd.keys()) | list }}"
+
+- name: Remove Splunk-related users if they exist
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: true
+  loop: "{{ existing_splunk_users }}"
+  when: existing_splunk_users | length > 0
+
+- name: Filter existing Splunk-related groups
+  ansible.builtin.set_fact:
+    existing_splunk_groups: "{{ [splunk_group, splunkfwd_group, splunkadmin_group] | select('in', ansible_facts.getent_group.keys()) | list }}"
+
+- name: Remove Splunk-related groups if they exist
+  ansible.builtin.group:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ existing_splunk_groups }}"
+  when: existing_splunk_groups | length > 0
+
+- name: Remove Splunk log files
+  ansible.builtin.file:
+    path: "/var/log/splunk"
+    state: absent
+
+- name: Remove Splunk environment files
+  ansible.builtin.file:
+    path: "/etc/profile.d/splunkenv.sh"
+    state: absent

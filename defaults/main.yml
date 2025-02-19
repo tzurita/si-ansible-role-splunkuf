@@ -1,0 +1,20 @@
+---
+# defaults file for si.splunk
+#
+deployment_server: "si-splunk-sh01.si.edu:8089"
+splunk_uid: 5003
+splunk_gid: 5003
+splunk_group: "splunk"
+splunk_home: "/opt/splunkforwarder"
+splunk_pgp_key: "SplunkPGPKey.pub"
+splunk_rpm: "splunkforwarder-9.1.7-e17104057ef0.x86_64.rpm"
+splunk_service: "SplunkForwarder"
+splunk_systemd_file: "/etc/systemd/system/SplunkForwarder.service"
+splunk_user: "splunk"
+splunkadmin_group: "splunkadmin"
+splunkadmin_user: "splunkadmin"
+splunkfwd_group: "splunkfwd"
+splunkfwd_user: "splunkfwd"
+acl_paths:
+  - "/var/log"
+  - "/var/log/audit"

@@ -1,0 +1,11 @@
+---
+# tasks file for si.splunk
+- import_tasks: install.yml
+  when: "'uninstall' not in ansible_run_tags"  # Runs install by default, unless --tags uninstall is used
+  tags:
+    - install
+
+- import_tasks: uninstall.yml
+  when: "'uninstall' in ansible_run_tags"  # Runs only when --tags uninstall is explicitly set
+  tags:
+    - uninstall

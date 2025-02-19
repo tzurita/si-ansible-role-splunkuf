@@ -1,0 +1,157 @@
+- name: Ensure system is RHEL, CentOS, AlmaLinux, or Rocky Linux (8 or 9)
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == "RedHat"
+      - ansible_distribution_major_version | int in [7, 8, 9]
+    fail_msg: "This playbook is only compatible with Red Hat Enterprise , CentOS, AlmaLinux, and Rocky Linux versions 8 and 9."
+
+- name: Create splunk group with GID 5003
+  ansible.builtin.group:
+    name: "{{ splunk_group }}"
+    gid: "{{ splunk_gid }}"
+    state: present
+
+- name: Create splunk user with UID 5003
+  ansible.builtin.user:
+    name: "{{ splunk_user }}"
+    uid: "{{ splunk_uid }}"
+    group: "{{ splunk_group }}"
+    home: "{{ splunk_home }}"
+    shell: /bin/bash
+    state: present
+
+- name: Create a temporary directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: splunk
+  register: temp_dir
+
+- name: Copy Splunk PGP key to client
+  ansible.builtin.copy:
+    src: "files/{{ splunk_pgp_key }}"
+    dest: "{{ temp_dir.path }}/{{ splunk_pgp_key }}"
+    mode: '0644'
+
+- name: Check if Splunk PGP key is already imported
+  ansible.builtin.rpm_key:
+    key: "{{ temp_dir.path }}/{{ splunk_pgp_key }}"
+    state: present
+
+- name: Copy Splunk Universal Forwarder RPM to client
+  ansible.builtin.copy:
+    src: "files/{{ splunk_rpm }}"
+    dest: "{{ temp_dir.path }}/{{ splunk_rpm }}"
+    mode: '0644'
+
+- name: Install Splunk Universal Forwarder
+  ansible.builtin.package:
+    name: "{{ temp_dir.path }}/{{ splunk_rpm }}"
+    state: present
+
+- name: Set ownership of SPLUNK_HOME
+  ansible.builtin.file:
+    path: "{{ splunk_home }}"
+    owner: "{{ splunk_user }}"
+    group: "{{ splunk_group }}"
+    recurse: true
+
+- name: Force accept Splunk license and start Splunk
+  ansible.builtin.command:
+    cmd: "{{ splunk_home }}/bin/splunk start --accept-license --answer-yes --no-prompt"
+  register: splunk_start
+  changed_when: "'Splunk> All batbelt props' in splunk_start.stdout or 'Starting splunk' in splunk_start.stdout or 'Waiting for web server' in splunk_start.stdout"
+
+- name: Enable Splunk to start at boot
+  ansible.builtin.command:
+    cmd: "{{ splunk_home }}/bin/splunk enable boot-start -systemd-managed 1 -user {{ splunk_user }}"
+  register: splunk_boot
+  changed_when: "'init script installed' in splunk_boot.stdout or 'Moving' in splunk_boot.stdout or 'Systemd unit file installed' in splunk_boot.stdout"
+  notify: Reload systemd
+
+- name: Remove legacy files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ splunk_home }}/etc/system/local/deploymentclient.conf"
+    - "/etc/profile.d/splunkenv.sh"
+    - "/etc/logrotate.d/Splunk_ACLs"
+
+- name: Generate random password with required complexity
+  ansible.builtin.set_fact:
+    generated_password: "{{ lookup('community.general.random_string', length=12, min_lower=1, min_upper=1, min_numeric=1, min_special=1, override_special='-_=+!#$()[]') }}"
+  changed_when: true
+
+- name: Hash the generated password using sha512
+  ansible.builtin.set_fact:
+    hashed_password: "{{ generated_password | password_hash('sha512') }}"
+  changed_when: true
+
+- name: "Create /opt/splunkforwarder/etc/passwd with hashed admin password"
+  ansible.builtin.copy:
+    dest: "/opt/splunkforwarder/etc/passwd"
+    content: |
+      :admin:{{ hashed_password }}::Administrator:admin:splunk@si.edu::
+    owner: "{{ splunk_user }}"
+    group: "{{ splunk_group }}"
+    mode: '0600'
+
+- name: Create deployment client directory
+  ansible.builtin.file:
+    path: "{{ splunk_home }}/etc/apps/OCIO_all_sites_deploymentclient/default"
+    state: directory
+    owner: "{{ splunk_user }}"
+    group: "{{ splunk_group }}"
+    mode: u+rwx,g-rwx,o-rwx
+
+- name: Configure deployment client
+  ansible.builtin.copy:
+    dest: "{{ splunk_home }}/etc/apps/OCIO_all_sites_deploymentclient/default/deploymentclient.conf"
+    content: |
+      [target-broker:deploymentServer]
+      targetUri = {{ deployment_server }}
+    owner: "{{ splunk_user }}"
+    group: "{{ splunk_group }}"
+    mode: '0644'
+
+
+##### Setup Permissions #####
+
+- name: "Set ACL's to System Logs"
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: "{{ splunk_user }}"
+    etype: user
+    state: present
+    permissions: rx
+    recursive: true
+  loop:
+    - /var/log
+    - /var/log/audit
+
+##### Restart Splunk and Cleanup #####
+
+- name: Ensure SPLUNK_HOME variable is set
+  ansible.builtin.lineinfile:
+    path: "{{ splunk_home }}/etc/splunk-launch.conf"
+    line: "SPLUNK_HOME={{ splunk_home }}"
+    create: true
+    owner: "{{ splunk_user }}"
+    group: "{{ splunk_group }}"
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Remove temporary directory after installation
+  ansible.builtin.file:
+    path: "{{ temp_dir.path }}"
+    state: absent
+
+- name: Remove splunkfwd user if it exists
+  ansible.builtin.user:
+    name: "splunkfwd"
+    state: absent
+
+- name: Remove splunkfwd group if it exists
+  ansible.builtin.group:
+    name: "splunkfwd"
+    state: absent

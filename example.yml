@@ -1,0 +1,6 @@
+---
+- name: Splunk Role
+  hosts: all
+  become: true  # Use sudo if necessary
+  roles:
+    - si.splunkforwarder
