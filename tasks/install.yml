@@ -55,6 +55,13 @@
     group: "{{ splunk_group }}"
     recurse: true
 
+- name: Set Perms of SPLUNK_HOME
+  ansible.builtin.file:
+    path: "{{ splunk_home }}"
+    owner: "{{ splunk_user }}"
+    group: "{{ splunk_group }}"
+    mode: '0750'
+
 - name: Force accept Splunk license and start Splunk
   ansible.builtin.command:
     cmd: "{{ splunk_home }}/bin/splunk start --accept-license --answer-yes --no-prompt"
